@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kites and Threads · Workflow</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; }
+  header { background: #1d1d1f; color: #fff; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; display: flex; align-items: center; gap: 12px; }
+  .logo { width: 200px; height: 26px; overflow: hidden; position: relative; flex: none; }
+  .logo img { position: absolute; width: 286px; left: -43px; top: -120px; max-width: none; }
+  main { display: grid; grid-template-columns: 340px 1fr; gap: 16px; padding: 16px; max-width: 1200px; margin: 0 auto; }
+  section { background: #fff; border-radius: 10px; padding: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  h3 { font-size: 13px; margin: 14px 0 6px; text-transform: uppercase; color: #6e6e73; }
+  input, select, button { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid #c7c7cc; }
+  input, select { width: 100%; margin: 3px 0 8px; }
+  button { background: #fff; cursor: pointer; }
+  button.primary { background: #0a84ff; color: #fff; border-color: #0a84ff; }
+  button.danger { color: #d70015; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .card { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; cursor: pointer; }
+  .card.active { border-color: #0a84ff; }
+  .pill { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 99px; background: #e5e5ea; }
+  .stage-JOB_ACCEPTED { background: #d1f0d6; } .stage-MAIN_SHOOT { background: #ffe9b3; } .stage-JOB_COMPLETE { background: #c9d9ff; }
+  .task { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid #f0f0f3; }
+  .task.overdue { color: #d70015; }
+  .muted { color: #6e6e73; font-size: 12px; }
+  .stages { display: flex; gap: 4px; margin-bottom: 10px; }
+  .stages div { flex: 1; text-align: center; padding: 6px 2px; font-size: 12px; border-radius: 6px; background: #f0f0f3; }
+  .stages div.on { background: #0a84ff; color: #fff; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td, th { text-align: left; padding: 4px; border-bottom: 1px solid #f0f0f3; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="logo"><img src="logo-white.png" alt="Kites and Threads"></span> <span class="muted" style="color:#aeaeb2">Wedding Films & Portraits · workflow</span></h1>
+  <div class="row">
+    <button id="runAuto">Run automations</button>
+    <button id="exportBtn">Export backup</button>
+    <button id="importBtn">Import backup</button>
+    <input type="file" id="importFile" accept="application/json" hidden>
+  </div>
+  <div class="row">
+    <input id="syncUrl" placeholder="Sync server, e.g. http://192.168.1.20:8787" style="width:260px">
+    <button id="pullBtn">Pull from server</button>
+    <button id="pushBtn">Push to server</button>
+  </div>
+</header>
+
+<main>
+  <div>
+    <section>
+      <h2>New lead</h2>
+      <form id="leadForm">
+        <label>Lead / job name<input name="name" required></label>
+        <label>Client name<input name="clientName"></label>
+        <label>Client email<input name="clientEmail" type="email"></label>
+        <label>Main shoot date<input name="shootDate" type="datetime-local"></label>
+        <label>Job type<select name="jobTypeId" id="jobTypeSelect"></select></label>
+        <label>Notes<input name="notes"></label>
+        <button class="primary" type="submit">Add lead</button>
+      </form>
+    </section>
+    <section style="margin-top:16px">
+      <h2>Jobs</h2>
+      <div id="list"></div>
+    </section>
+  </div>
+
+  <section id="detail"><p class="muted">Select a lead or job.</p></section>
+</main>
+
+<script src="workflow.js"></script>
+<script>
+(function () {
+  'use strict';
+  const W = window.KitesThreadsWorkflow;
+  const KEY = 'kites-and-threads-workflow:v1';
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const fmt = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
+  const money = (n) => '$' + Number(n || 0).toFixed(2);
+
+  function defaultState() {
+    const wedding = W.makeJobType('Wedding Film & Photos', '#e11d48', [
+      W.makeTemplateTask('Send questionnaire (couple story, timeline, families)', 'email', 'LEAD_CREATED', 2, { autoSend: true, emailTemplate: 'questionnaire' }),
+      W.makeTemplateTask('Send contract & advance invoice', 'email', 'JOB_ACCEPTED', 1, { autoSend: false, emailTemplate: 'contract' }),
+      W.makeTemplateTask('Book second shooter / drone / videographer', 'extra_shoot', 'JOB_ACCEPTED', 0),
+      W.makeTemplateTask('Send pre-wedding checklist to couple', 'email', 'MAIN_SHOOT', -7, { autoSend: true, emailTemplate: 'reminder' }),
+      W.makeTemplateTask('Edit & deliver film teaser + highlights', 'todo', 'MAIN_SHOOT', 30),
+    ]);
+    const preWedding = W.makeJobType('Pre-Wedding / Couple Shoot', '#f59e0b', [
+      W.makeTemplateTask('Send questionnaire & mood board request', 'email', 'LEAD_CREATED', 0, { autoSend: true, emailTemplate: 'questionnaire' }),
+      W.makeTemplateTask('Send location & outfit guide', 'email', 'MAIN_SHOOT', -5, { autoSend: true, emailTemplate: 'reminder' }),
+      W.makeTemplateTask('Edit & deliver photos', 'todo', 'MAIN_SHOOT', 10),
+    ]);
+    const portrait = W.makeJobType('Portrait Session', '#0a84ff', [
+      W.makeTemplateTask('Send questionnaire', 'email', 'LEAD_CREATED', 0, { autoSend: true, emailTemplate: 'questionnaire' }),
+      W.makeTemplateTask('Edit photos', 'todo', 'MAIN_SHOOT', 7),
+    ]);
+    return { jobTypes: [wedding, preWedding, portrait], records: [], selectedId: null };
+  }
+
+  let state;
+  function load() {
+    try { state = JSON.parse(localStorage.getItem(KEY)) || defaultState(); }
+    catch (e) { state = defaultState(); }
+    if (!state.jobTypes || !state.records) state = defaultState();
+  }
+  function save() { localStorage.setItem(KEY, JSON.stringify(state)); }
+
+  const jobType = (id) => state.jobTypes.find((j) => j.id === id);
+  const record = (id) => state.records.find((r) => r.id === id);
+
+  function renderJobTypeSelect() {
+    $('#jobTypeSelect').innerHTML = state.jobTypes
+      .map((j) => `<option value="${esc(j.id)}">${esc(j.name)}</option>`).join('');
+  }
+
+  function renderList() {
+    const now = new Date();
+    $('#list').innerHTML = state.records.length ? state.records.slice().reverse().map((r) => {
+      const jt = jobType(r.jobTypeId);
+      const od = W.overdueTasks(r, now).length;
+      return `<div class="card ${r.id === state.selectedId ? 'active' : ''}" data-id="${esc(r.id)}">
+        <strong>${esc(r.name)}</strong>
+        <div class="muted">${esc(jt ? jt.name : 'No job type')} · shoot ${esc(fmt(r.shootDate))}</div>
+        <span class="pill stage-${esc(r.stage)}">${esc(W.stageLabel(r.stage))}</span>
+        ${od ? `<span class="pill" style="background:#ffd6d9">${od} overdue</span>` : ''}
+      </div>`;
+    }).join('') : '<p class="muted">No leads yet.</p>';
+  }
+
+  function renderDetail() {
+    const r = record(state.selectedId);
+    if (!r) { $('#detail').innerHTML = '<p class="muted">Select a lead or job.</p>'; return; }
+    const now = new Date();
+    const stages = W.MILESTONES.map((m) => {
+      const on = W.MILESTONES.indexOf(m) <= W.MILESTONES.indexOf(r.stage);
+      return `<div class="${on ? 'on' : ''}">${esc(W.stageLabel(m))}</div>`;
+    }).join('');
+    const tasks = r.tasks.map((t) => {
+      const late = !t.done && t.dueDate && new Date(t.dueDate) < now;
+      const mode = t.type === 'email' && t.autoSend ? 'auto' : 'manual';
+      return `<label class="task ${late ? 'overdue' : ''}">
+        <input type="checkbox" data-task="${esc(t.id)}" ${t.done ? 'checked' : ''}>
+        <span style="flex:1">${esc(t.title)} <span class="muted">[${esc(t.type)}, ${mode}]</span></span>
+        <span class="muted">${t.dueDate ? 'due ' + esc(fmt(t.dueDate)) : t.anchor ? 'waiting for ' + esc(W.stageLabel(t.anchor)) : ''}</span>
+      </label>`;
+    }).join('') || '<p class="muted">No workflow tasks (no job type).</p>';
+    const quotes = r.quotes.map((q) => `<div class="card">
+        <strong>${esc(q.kind === 'fixed' ? 'Fixed quote' : 'Pick & choose quote')}</strong> · ${money(W.quoteTotal(q))} · <span class="pill">${esc(q.status)}</span>
+        ${q.status !== 'accepted' ? `<div class="row" style="margin-top:6px"><button data-accept="${esc(q.id)}" class="primary">Client accepted</button></div>` : ''}
+      </div>`).join('') || '<p class="muted">No quotes yet.</p>';
+    const invoices = r.invoices.length ? `<table><tr><th>Invoice</th><th>Amount</th></tr>${r.invoices.map((i) => `<tr><td>${esc(i.label)}</td><td>${money(i.amount)}</td></tr>`).join('')}</table>
+      <p>Paid ${money(W.amountPaid(r))} · <strong>Balance ${money(W.balanceDue(r))}</strong></p>` : '<p class="muted">No invoices.</p>';
+    const emails = r.emailLog.length ? r.emailLog.slice().reverse().map((e) => `<div class="task"><span>${esc(e.subject)}</span><span class="muted">to ${esc(e.to || '—')} · ${esc(fmt(e.at))}</span></div>`).join('') : '<p class="muted">No automated emails sent yet.</p>';
+
+    $('#detail').innerHTML = `
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <h2 style="margin:0">${esc(r.name)}</h2>
+        <button class="danger" data-delete>Delete</button>
+      </div>
+      <p class="muted">${esc(r.client.name)} ${esc(r.client.email)} · ${esc(r.notes)}</p>
+      <div class="stages">${stages}</div>
+      <div class="row">
+        <button data-milestone="JOB_COMPLETE">Mark Job Complete</button>
+        <button data-milestone="MAIN_SHOOT">Mark Main Shoot done</button>
+      </div>
+
+      <h3>Workflow</h3>${tasks}
+
+      <h3>Quotes</h3>
+      <form id="quoteForm" class="row" style="align-items:flex-end">
+        <select name="kind" style="width:auto"><option value="fixed">Fixed</option><option value="pick_choose">Pick &amp; choose</option></select>
+        <input name="label" placeholder="Package" style="width:160px">
+        <input name="price" type="number" min="0" step="0.01" placeholder="Price" style="width:110px">
+        <input name="deposit" type="number" min="0" max="100" placeholder="Deposit %" style="width:110px">
+        <button type="submit">Add quote</button>
+      </form>
+      ${quotes}
+
+      <h3>Invoices & payments</h3>
+      ${invoices}
+      <form id="payForm" class="row" style="align-items:flex-end">
+        <input name="amount" type="number" min="0.01" step="0.01" placeholder="Payment amount" style="width:180px">
+        <button type="submit">Record payment</button>
+      </form>
+
+      <h3>Automated email log</h3>${emails}
+      `;
+  }
+
+  function renderAll() { renderJobTypeSelect(); renderList(); renderDetail(); }
+
+  function act(fn) {
+    try { fn(); save(); renderAll(); }
+    catch (e) { alert(e.message); }
+  }
+
+  $('#leadForm').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    act(() => {
+      const jt = jobType(f.get('jobTypeId'));
+      const r = W.createRecord({
+        name: f.get('name'), clientName: f.get('clientName'), clientEmail: f.get('clientEmail'),
+        shootDate: f.get('shootDate') || null, notes: f.get('notes'),
+      }, jt);
+      state.records.push(r);
+      state.selectedId = r.id;
+      ev.target.reset();
+    });
+  });
+
+  $('#list').addEventListener('click', (ev) => {
+    const card = ev.target.closest('[data-id]');
+    if (card) { state.selectedId = card.dataset.id; save(); renderAll(); }
+  });
+
+  $('#detail').addEventListener('click', (ev) => {
+    const r = record(state.selectedId);
+    if (!r) return;
+    const t = ev.target;
+    if (t.matches('[data-delete]')) {
+      if (!confirm('Delete this lead/job?')) return;
+      act(() => { state.records = state.records.filter((x) => x.id !== r.id); state.selectedId = null; });
+    } else if (t.dataset.milestone) {
+      act(() => W.markMilestoneManual(r, t.dataset.milestone));
+    } else if (t.dataset.accept) {
+      act(() => W.acceptQuote(r, t.dataset.accept));
+    }
+  });
+
+  $('#detail').addEventListener('change', (ev) => {
+    const r = record(state.selectedId);
+    if (!r || !ev.target.dataset.task) return;
+    act(() => {
+      const task = r.tasks.find((x) => x.id === ev.target.dataset.task);
+      task.done = ev.target.checked;
+    });
+  });
+
+  $('#detail').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const r = record(state.selectedId);
+    if (!r) return;
+    const f = new FormData(ev.target);
+    if (ev.target.id === 'quoteForm') {
+      act(() => {
+        W.makeQuote(r, f.get('kind'), [{ label: f.get('label') || 'Package', price: f.get('price') || 0 }],
+          { depositPercent: f.get('deposit') || 0 });
+      });
+    } else if (ev.target.id === 'payForm') {
+      act(() => W.recordPayment(r, f.get('amount')));
+    }
+  });
+
+  $('#runAuto').addEventListener('click', () => {
+    act(() => {
+      state.records.forEach((r) => W.applyClock(r));
+      const n = W.runAllAutomations(state.records);
+      alert(n ? `Sent ${n} automated email(s).` : 'No automated emails were due.');
+    });
+  });
+
+  $('#exportBtn').addEventListener('click', () => {
+    const blob = new Blob([W.exportData({ jobTypes: state.jobTypes, records: state.records })], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'kites-and-threads-workflow-backup.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  $('#importBtn').addEventListener('click', () => $('#importFile').click());
+  $('#importFile').addEventListener('change', (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    file.text().then((txt) => {
+      const data = W.importData(txt);
+      state.jobTypes = data.jobTypes; state.records = data.records; state.selectedId = null;
+      save(); renderAll();
+    }).catch((e) => alert('Import failed: ' + e.message));
+    ev.target.value = '';
+  });
+
+  // LAN sync: push/pull the whole backup to the sync-server.js on this network.
+  const SYNC_KEY = 'ktWorkflowSyncUrl';
+  $('#syncUrl').value = localStorage.getItem(SYNC_KEY) || (location.protocol.startsWith('http') ? location.origin : '');
+  $('#syncUrl').addEventListener('change', (e) => localStorage.setItem(SYNC_KEY, e.target.value.trim()));
+  const syncBase = () => {
+    const u = $('#syncUrl').value.trim().replace(/\/+$/, '');
+    if (!u) throw new Error('Enter the sync server address first.');
+    return u;
+  };
+  async function pushSync() {
+    const base = syncBase();
+    if (!confirm('Overwrite the server copy with this device\'s data?')) return;
+    const body = W.exportData({ jobTypes: state.jobTypes, records: state.records });
+    const r = await fetch(base + '/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body });
+    if (!r.ok) throw new Error(await r.text());
+    alert('Pushed to server.');
+  }
+  async function pullSync() {
+    const base = syncBase();
+    if (!confirm('Replace this device\'s data with the server copy?')) return;
+    const r = await fetch(base + '/api/state', { cache: 'no-store' });
+    if (r.status === 404) throw new Error('The server has no data yet. Push from a device first.');
+    if (!r.ok) throw new Error(await r.text());
+    const data = W.importData(await r.text());
+    state.jobTypes = data.jobTypes; state.records = data.records; state.selectedId = null;
+    save(); renderAll();
+    alert('Pulled from server.');
+  }
+  $('#pushBtn').addEventListener('click', () => pushSync().catch((e) => alert('Push failed: ' + e.message)));
+  $('#pullBtn').addEventListener('click', () => pullSync().catch((e) => alert('Pull failed: ' + e.message)));
+
+  load();
+  renderAll();
+})();
+</script>
+</body>
+</html>
